@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Page Pull — PDF page extractor & renamer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+  :root{
+    --ink:#1c2230;
+    --paper:#f6f7f4;
+    --card:#ffffff;
+    --line:#dfe3da;
+    --indigo:#3b4ccf;
+    --indigo-dark:#2a37a0;
+    --amber:#f0a020;
+    --green:#1d8a4e;
+    --red:#c4452e;
+    --mute:#6b7280;
+    --mono:'IBM Plex Mono', ui-monospace, 'Cascadia Code', Menlo, monospace;
+  }
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{font-size:16px}
+  body{
+    font-family:'IBM Plex Sans', system-ui, sans-serif;
+    background:var(--paper);
+    color:var(--ink);
+    min-height:100vh;
+    padding:0 0 80px;
+  }
+  /* header */
+  header{
+    background:var(--ink);
+    color:#fff;
+    padding:28px 24px 26px;
+    border-bottom:4px solid var(--amber);
+  }
+  .head-inner{max-width:980px;margin:0 auto;display:flex;align-items:baseline;gap:16px;flex-wrap:wrap}
+  header h1{font-size:1.35rem;font-weight:700;letter-spacing:-0.01em}
+  header h1 .tick{color:var(--amber)}
+  header p{color:#aab2c4;font-size:.85rem;font-family:var(--mono)}
+  main{max-width:980px;margin:0 auto;padding:32px 24px 0}
+
+  /* step strip */
+  .steps{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:22px}
+  @media(max-width:680px){.steps{grid-template-columns:1fr}}
+  .drop{
+    background:var(--card);
+    border:1.5px dashed var(--line);
+    border-radius:10px;
+    padding:26px 20px;
+    cursor:pointer;
+    transition:border-color .15s, background .15s;
+    position:relative;
+  }
+  .drop:hover,.drop.over{border-color:var(--indigo);background:#f3f5ff}
+  .drop.loaded{border-style:solid;border-color:var(--green)}
+  .drop:focus-visible{outline:3px solid var(--indigo);outline-offset:2px}
+  .drop .tag{
+    font-family:var(--mono);font-size:.7rem;font-weight:600;letter-spacing:.08em;
+    text-transform:uppercase;color:var(--indigo);margin-bottom:8px;display:block;
+  }
+  .drop.loaded .tag{color:var(--green)}
+  .drop h2{font-size:1rem;font-weight:600;margin-bottom:4px}
+  .drop p{font-size:.82rem;color:var(--mute)}
+  .drop .filemeta{font-family:var(--mono);font-size:.78rem;color:var(--green);margin-top:8px;word-break:break-all}
+  .drop input{display:none}
+
+  /* mapping preview */
+  .panel{
+    background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:18px 20px;margin-bottom:22px;
+  }
+  .panel h3{font-size:.78rem;font-family:var(--mono);text-transform:uppercase;letter-spacing:.08em;color:var(--mute);margin-bottom:10px}
+  .chiprow{display:flex;flex-wrap:wrap;gap:8px}
+  .chip{
+    font-family:var(--mono);font-size:.76rem;background:#eef0ff;color:var(--indigo-dark);
+    border:1px solid #d5daf8;border-radius:5px;padding:4px 9px;
+  }
+  .chip b{color:var(--ink)}
+
+  /* run row */
+  .runrow{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:26px}
+  button.run{
+    font-family:'IBM Plex Sans',sans-serif;font-size:1rem;font-weight:600;
+    background:var(--indigo);color:#fff;border:none;border-radius:8px;
+    padding:13px 30px;cursor:pointer;transition:background .15s;
+  }
+  button.run:hover:not(:disabled){background:var(--indigo-dark)}
+  button.run:disabled{background:#c2c7d4;cursor:not-allowed}
+  button.run:focus-visible{outline:3px solid var(--amber);outline-offset:2px}
+  .runhint{font-size:.82rem;color:var(--mute)}
+  .namepattern{font-family:var(--mono);font-size:.82rem;color:var(--ink);background:#fff6e4;border:1px solid #f0dcae;border-radius:6px;padding:6px 11px}
+
+  /* progress */
+  .progress{display:none;margin-bottom:22px}
+  .progress.show{display:block}
+  .bar{height:8px;background:#e6e8e2;border-radius:99px;overflow:hidden;margin-bottom:8px}
+  .bar i{display:block;height:100%;width:0%;background:var(--indigo);transition:width .2s;border-radius:99px}
+  .progress span{font-family:var(--mono);font-size:.78rem;color:var(--mute)}
+
+  /* results table */
+  .results{display:none}
+  .results.show{display:block}
+  .summary{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+  .stat{
+    background:var(--card);border:1px solid var(--line);border-radius:8px;
+    padding:10px 16px;font-size:.82rem;color:var(--mute);
+  }
+  .stat b{display:block;font-size:1.3rem;color:var(--ink);font-weight:700}
+  .stat.ok b{color:var(--green)}
+  .stat.miss b{color:var(--red)}
+  table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden;font-size:.85rem}
+  th{
+    text-align:left;font-family:var(--mono);font-size:.68rem;text-transform:uppercase;
+    letter-spacing:.08em;color:var(--mute);font-weight:600;
+    padding:10px 14px;border-bottom:1px solid var(--line);background:#fafbf8;
+  }
+  td{padding:9px 14px;border-bottom:1px solid #eef0ea;font-family:var(--mono);font-size:.8rem}
+  tr:last-child td{border-bottom:none}
+  .pill{font-size:.7rem;font-weight:600;padding:2px 8px;border-radius:99px}
+  .pill.ok{background:#e3f3ea;color:var(--green)}
+  .pill.miss{background:#fbe9e5;color:var(--red)}
+  .dlrow{margin-top:18px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  button.dl{
+    font-family:'IBM Plex Sans',sans-serif;font-size:1rem;font-weight:600;
+    background:var(--green);color:#fff;border:none;border-radius:8px;
+    padding:13px 30px;cursor:pointer;
+  }
+  button.dl:hover{background:#166e3d}
+  button.dl:focus-visible{outline:3px solid var(--amber);outline-offset:2px}
+  .err{
+    display:none;background:#fbe9e5;border:1px solid #efc4ba;color:#8c2f1d;
+    border-radius:8px;padding:12px 16px;font-size:.85rem;margin-bottom:22px;
+  }
+  .err.show{display:block}
+  @media (prefers-reduced-motion: reduce){*{transition:none !important}}
+</style>
+</head>
+<body>
+<header>
+  <div class="head-inner">
+    <h1><span class="tick">▰</span> Page Pull</h1>
+    <p>match page labels → rename from sheet → zip of PNGs</p>
+  </div>
+</header>
+
+<main>
+  <div class="err" id="errBox"></div>
+
+  <div class="steps">
+    <label class="drop" id="dropPdf" tabindex="0">
+      <span class="tag">1 · Source PDF</span>
+      <h2>Drop the PDF here</h2>
+      <p>Each page should carry its label near the top, e.g. EC - B1</p>
+      <div class="filemeta" id="pdfMeta"></div>
+      <input type="file" id="filePdf" accept=".pdf">
+    </label>
+
+    <label class="drop" id="dropSheet" tabindex="0">
+      <span class="tag">2 · Mapping sheet</span>
+      <h2>Drop the sheet here</h2>
+      <p>.xlsx / .xls / .csv — name in column A, number in column B</p>
+      <div class="filemeta" id="sheetMeta"></div>
+      <input type="file" id="fileSheet" accept=".xlsx,.xls,.csv">
+    </label>
+  </div>
+
+  <div class="panel" id="mapPanel" style="display:none">
+    <h3>Mappings loaded</h3>
+    <div class="chiprow" id="chipRow"></div>
+  </div>
+
+  <div class="runrow">
+    <button class="run" id="btnRun" disabled>Extract & rename pages</button>
+    <span class="namepattern" id="patternHint"></span>
+    <span class="runhint">Everything runs locally in your browser — files never leave your machine.</span>
+  </div>
+
+  <div class="progress" id="prog">
+    <div class="bar"><i id="progFill"></i></div>
+    <span id="progLabel">Reading PDF…</span>
+  </div>
+
+  <div class="results" id="results">
+    <div class="summary">
+      <div class="stat"><b id="stPages">0</b>pages scanned</div>
+      <div class="stat ok"><b id="stMatched">0</b>matched & extracted</div>
+      <div class="stat miss"><b id="stMissed">0</b>not in sheet</div>
+    </div>
+    <table>
+      <thead><tr><th>Page</th><th>Label detected</th><th>Number</th><th>Saved as</th><th>Status</th></tr></thead>
+      <tbody id="resBody"></tbody>
+    </table>
+    <div class="dlrow">
+      <button class="dl" id="btnZip" style="display:none">Download zip</button>
+      <span class="runhint" id="zipHint"></span>
+    </div>
+  </div>
+</main>
+
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+const state = { pdfFile:null, mapping:null, zipBlob:null, zipName:null };
+
+// ---------- date suffix ----------
+const now = new Date();
+const monthName = now.toLocaleString('en-US',{month:'long'}).toLowerCase();
+const suffix = `_${monthName}_${now.getFullYear()}`;
+document.getElementById('patternHint').textContent = `naming: <number>${suffix}.png`;
+
+// ---------- helpers ----------
+const $ = id => document.getElementById(id);
+// Reduce to letters+digits only, so "EC_B1", "EC - B1", "EC B - 1" all become "ECB1"
+const norm = s => String(s).toUpperCase().replace(/[^A-Z0-9]+/g,'');
+
+// Find a key inside normalized text with digit boundaries:
+// "ECB1" must not match inside "ECB12" (so EC B - 1 ≠ EC B - 12)
+function findKey(keys, normText){
+  for(const k of keys){
+    let idx = normText.indexOf(k);
+    while(idx !== -1){
+      const before = normText[idx-1];
+      const after  = normText[idx+k.length];
+      const beforeOk = !(before && /\d/.test(before) && /\d/.test(k[0]));
+      const afterOk  = !(after  && /\d/.test(after)  && /\d/.test(k[k.length-1]));
+      if(beforeOk && afterOk) return k;
+      idx = normText.indexOf(k, idx+1);
+    }
+  }
+  return null;
+}
+function showError(msg){ const e=$('errBox'); e.textContent=msg; e.classList.add('show'); }
+function clearError(){ $('errBox').classList.remove('show'); }
+
+// ---------- drop zones ----------
+function wireDrop(zoneId, inputId, onFile){
+  const zone=$(zoneId), input=$(inputId);
+  zone.addEventListener('dragover', e=>{e.preventDefault(); zone.classList.add('over');});
+  zone.addEventListener('dragleave', ()=>zone.classList.remove('over'));
+  zone.addEventListener('drop', e=>{
+    e.preventDefault(); zone.classList.remove('over');
+    if(e.dataTransfer.files.length) onFile(e.dataTransfer.files[0]);
+  });
+  input.addEventListener('change', ()=>{ if(input.files.length) onFile(input.files[0]); });
+  zone.addEventListener('keydown', e=>{ if(e.key==='Enter'||e.key===' '){e.preventDefault(); input.click();} });
+}
+
+wireDrop('dropPdf','filePdf', f=>{
+  if(!/\.pdf$/i.test(f.name)){ showError('That does not look like a PDF file.'); return; }
+  clearError();
+  state.pdfFile = f;
+  $('pdfMeta').textContent = `${f.name} · ${(f.size/1024/1024).toFixed(2)} MB`;
+  $('dropPdf').classList.add('loaded');
+  maybeEnable();
+});
+
+wireDrop('dropSheet','fileSheet', async f=>{
+  clearError();
+  try{
+    const buf = await f.arrayBuffer();
+    const wb = XLSX.read(buf, {type:'array'});
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:false, defval:''});
+    const mapping = {};
+    let count = 0;
+    for(const row of rows){
+      if(!row || row.length < 2) continue;
+      const name = String(row[0]||'').trim();
+      const num  = String(row[1]||'').trim();
+      if(!name || !num) continue;
+      // skip an obvious header row like "Name | Number"
+      if(count===0 && !/\d/.test(num)) continue;
+      mapping[norm(name)] = { display:name, number:num };
+      count++;
+    }
+    if(count===0){ showError('Could not find any name → number pairs in the sheet. Expected name in column A and number in column B.'); return; }
+    state.mapping = mapping;
+    $('sheetMeta').textContent = `${f.name} · ${count} mapping${count>1?'s':''}`;
+    $('dropSheet').classList.add('loaded');
+    // preview chips
+    const chips = Object.values(mapping).slice(0,12)
+      .map(m=>`<span class="chip">${escapeHtml(m.display)} → <b>${escapeHtml(m.number)}</b></span>`).join('');
+    $('chipRow').innerHTML = chips + (count>12?`<span class="chip">+${count-12} more</span>`:'');
+    $('mapPanel').style.display='block';
+    maybeEnable();
+  }catch(err){
+    showError('Could not read the sheet: '+err.message);
+  }
+});
+
+function escapeHtml(s){ return s.replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function maybeEnable(){ $('btnRun').disabled = !(state.pdfFile && state.mapping); }
+
+// ---------- main run ----------
+$('btnRun').addEventListener('click', run);
+
+async function run(){
+  clearError();
+  $('btnRun').disabled = true;
+  $('results').classList.remove('show');
+  $('btnZip').style.display='none';
+  const prog=$('prog'); prog.classList.add('show');
+  const fill=$('progFill'), label=$('progLabel');
+  $('resBody').innerHTML='';
+
+  try{
+    const buf = await state.pdfFile.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({data:buf}).promise;
+    const total = pdf.numPages;
+
+    // sort name keys longest-first so "EC-B11" wins over "EC-B1"
+    const keys = Object.keys(state.mapping).sort((a,b)=>b.length-a.length);
+
+    const zip = new JSZip();
+    const usedNames = {};
+    let matched=0, missed=0;
+
+    for(let p=1; p<=total; p++){
+      label.textContent = `Scanning page ${p} of ${total}…`;
+      fill.style.width = `${Math.round((p-0.5)/total*100)}%`;
+
+      const page = await pdf.getPage(p);
+      const tc = await page.getTextContent();
+      const viewport = page.getViewport({scale:1});
+
+      // collect text from the top 25% of the page, fall back to whole page
+      const topText = [], allText = [];
+      for(const item of tc.items){
+        const y = viewport.height - item.transform[5]; // distance from top
+        allText.push(item.str);
+        if(y < viewport.height*0.25) topText.push(item.str);
+      }
+      const topNorm = norm(topText.join(' '));
+      const allNorm = norm(allText.join(' '));
+
+      let hitKey = findKey(keys, topNorm) || findKey(keys, allNorm);
+
+      const row = document.createElement('tr');
+      if(hitKey){
+        const m = state.mapping[hitKey];
+        // render page to PNG at 2x
+        label.textContent = `Rendering page ${p} (${m.display})…`;
+        const vp2 = page.getViewport({scale:2});
+        const canvas = document.createElement('canvas');
+        canvas.width = vp2.width; canvas.height = vp2.height;
+        await page.render({canvasContext:canvas.getContext('2d'), viewport:vp2}).promise;
+        const blob = await new Promise(res=>canvas.toBlob(res,'image/png'));
+
+        let base = `${m.number}${suffix}`;
+        if(usedNames[base]!==undefined){ usedNames[base]++; base = `${base}_${usedNames[base]}`; }
+        else usedNames[base]=1;
+        const fname = `${base}.png`;
+        zip.file(fname, blob);
+        matched++;
+        row.innerHTML = `<td>${p}</td><td>${escapeHtml(m.display)}</td><td>${escapeHtml(m.number)}</td><td>${fname}</td><td><span class="pill ok">extracted</span></td>`;
+      }else{
+        missed++;
+        const snippet = topText.join(' ').trim().slice(0,40) || '—';
+        row.innerHTML = `<td>${p}</td><td>${escapeHtml(snippet)}</td><td>—</td><td>—</td><td><span class="pill miss">no match</span></td>`;
+      }
+      $('resBody').appendChild(row);
+    }
+
+    fill.style.width='100%';
+    label.textContent='Done.';
+    $('stPages').textContent=total;
+    $('stMatched').textContent=matched;
+    $('stMissed').textContent=missed;
+    $('results').classList.add('show');
+
+    if(matched>0){
+      label.textContent='Building zip…';
+      state.zipBlob = await zip.generateAsync({type:'blob'});
+      state.zipName = `extracted_pages${suffix}.zip`;
+      $('btnZip').style.display='inline-block';
+      $('zipHint').textContent = `${matched} image${matched>1?'s':''} · ${(state.zipBlob.size/1024/1024).toFixed(2)} MB`;
+      label.textContent='Done — zip ready.';
+    }else{
+      showError('No page labels matched the sheet. Check that the labels on the pages match the names in column A.');
+    }
+  }catch(err){
+    showError('Something went wrong: '+err.message);
+  }finally{
+    $('btnRun').disabled=false;
+  }
+}
+
+$('btnZip').addEventListener('click', ()=>{
+  const url = URL.createObjectURL(state.zipBlob);
+  const a = document.createElement('a');
+  a.href=url; a.download=state.zipName;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 5000);
+});
+</script>
+</body>
+</html>
