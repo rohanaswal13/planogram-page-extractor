@@ -31,20 +31,18 @@
     min-height:100vh;
     padding:0 0 80px;
   }
-  /* header */
   header{
     background:var(--ink);
     color:#fff;
     padding:28px 24px 26px;
     border-bottom:4px solid var(--amber);
   }
-  .head-inner{max-width:980px;margin:0 auto;display:flex;align-items:baseline;gap:16px;flex-wrap:wrap}
+  .head-inner{max-width:1080px;margin:0 auto;display:flex;align-items:baseline;gap:16px;flex-wrap:wrap}
   header h1{font-size:1.35rem;font-weight:700;letter-spacing:-0.01em}
   header h1 .tick{color:var(--amber)}
   header p{color:#aab2c4;font-size:.85rem;font-family:var(--mono)}
-  main{max-width:980px;margin:0 auto;padding:32px 24px 0}
+  main{max-width:1080px;margin:0 auto;padding:32px 24px 0}
 
-  /* step strip */
   .steps{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:22px}
   @media(max-width:680px){.steps{grid-template-columns:1fr}}
   .drop{
@@ -69,7 +67,6 @@
   .drop .filemeta{font-family:var(--mono);font-size:.78rem;color:var(--green);margin-top:8px;word-break:break-all}
   .drop input{display:none}
 
-  /* mapping preview */
   .panel{
     background:var(--card);border:1px solid var(--line);border-radius:10px;
     padding:18px 20px;margin-bottom:22px;
@@ -82,7 +79,6 @@
   }
   .chip b{color:var(--ink)}
 
-  /* run row */
   .runrow{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:26px}
   button.run{
     font-family:'IBM Plex Sans',sans-serif;font-size:1rem;font-weight:600;
@@ -95,14 +91,12 @@
   .runhint{font-size:.82rem;color:var(--mute)}
   .namepattern{font-family:var(--mono);font-size:.82rem;color:var(--ink);background:#fff6e4;border:1px solid #f0dcae;border-radius:6px;padding:6px 11px}
 
-  /* progress */
   .progress{display:none;margin-bottom:22px}
   .progress.show{display:block}
   .bar{height:8px;background:#e6e8e2;border-radius:99px;overflow:hidden;margin-bottom:8px}
   .bar i{display:block;height:100%;width:0%;background:var(--indigo);transition:width .2s;border-radius:99px}
   .progress span{font-family:var(--mono);font-size:.78rem;color:var(--mute)}
 
-  /* results table */
   .results{display:none}
   .results.show{display:block}
   .summary{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px}
@@ -124,6 +118,7 @@
   .pill{font-size:.7rem;font-weight:600;padding:2px 8px;border-radius:99px}
   .pill.ok{background:#e3f3ea;color:var(--green)}
   .pill.miss{background:#fbe9e5;color:var(--red)}
+  .via{font-size:.7rem;color:var(--mute)}
   .dlrow{margin-top:18px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
   button.dl{
     font-family:'IBM Plex Sans',sans-serif;font-size:1rem;font-weight:600;
@@ -155,7 +150,7 @@
     <label class="drop" id="dropPdf" tabindex="0">
       <span class="tag">1 · Source PDF</span>
       <h2>Drop the PDF here</h2>
-      <p>Each page should carry its label near the top, e.g. EC - B1</p>
+      <p>Each page should carry its fixture label, e.g. EC - B1 or a wall header like "Fusion — Wall Elevations"</p>
       <div class="filemeta" id="pdfMeta"></div>
       <input type="file" id="filePdf" accept=".pdf">
     </label>
@@ -187,12 +182,12 @@
 
   <div class="results" id="results">
     <div class="summary">
-      <div class="stat"><b id="stPages">0</b>pages scanned</div>
+      <div class="stat"><b id="stFixtures">0</b>fixtures in sheet</div>
       <div class="stat ok"><b id="stMatched">0</b>images extracted</div>
-      <div class="stat miss"><b id="stMissed">0</b>not in sheet</div>
+      <div class="stat miss"><b id="stMissed">0</b>not found in PDF</div>
     </div>
     <table>
-      <thead><tr><th>Page</th><th>Label detected</th><th>Number</th><th>Saved as</th><th>Status</th></tr></thead>
+      <thead><tr><th>Fixture (sheet)</th><th>ROI number</th><th>Page</th><th>Matched via</th><th>Saved as</th><th>Status</th></tr></thead>
       <tbody id="resBody"></tbody>
     </table>
     <div class="dlrow">
@@ -205,7 +200,7 @@
 <script>
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
-const state = { pdfFile:null, mapping:null, zipBlob:null, zipName:null };
+const state = { pdfFile:null, fixtures:null, zipBlob:null, zipName:null };
 
 // ---------- date suffix ----------
 const now = new Date();
@@ -217,18 +212,73 @@ document.getElementById('patternHint').textContent = `naming: <number>${suffix}.
 const $ = id => document.getElementById(id);
 // Reduce to letters+digits only, so "EC_B1", "EC - B1", "EC B - 1" all become "ECB1"
 const norm = s => String(s).toUpperCase().replace(/[^A-Z0-9]+/g,'');
+// Uppercase alphanumeric tokens, e.g. "WALL -5 DRESS" -> ["WALL","5","DRESS"]
+const tokenize = s => String(s).toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean);
+function showError(msg){ const e=$('errBox'); e.textContent=msg; e.classList.add('show'); }
+function clearError(){ $('errBox').classList.remove('show'); }
+function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
-// Find ALL keys inside normalized text (a page can carry several fixtures,
-// e.g. MT - 4 - A and MT - 4 - B on the same planogram).
-// Rules:
-//  - digit boundaries: "ECB1" must not match inside "ECB12" (EC B - 1 ≠ EC B - 12)
-//  - keys are tried longest-first, and once a span of text is claimed by a key,
-//    shorter keys overlapping that span are skipped ("MT4" won't fire inside "MT4A")
-function findKeys(keys, normText){
+// ---------- fixture intelligence ----------
+
+// Aliases: the exact normalized name plus a letter/digit swap of the trailing pair,
+// so "KT 1B" (KT1B) also matches pages labelled "KT B1" (KTB1) and vice versa.
+function buildAliases(name){
+  const key = norm(name);
+  const set = new Set();
+  if(key) set.add(key);
+  let m = key.match(/^([A-Z]+)(\d+)([A-Z])$/);   // KT1B -> KTB1
+  if(m) set.add(m[1]+m[3]+m[2]);
+  m = key.match(/^([A-Z]+)([A-Z])(\d+)$/);        // KTB1 -> KT1B (greedy prefix keeps last letter as the swap letter)
+  if(m) set.add(m[1]+m[3]+m[2]);
+  return [...set];
+}
+
+// Wall heuristic: for fixtures whose sheet name contains WALL, the planogram page
+// is usually labelled by category ("Fusion" + "Wall Elevations"), not by the sheet name.
+// Extract the category tokens and the wall number so pages can be matched by content.
+function wallInfo(name){
+  const tokens = tokenize(name);
+  const wi = tokens.indexOf('WALL');
+  if(wi === -1) return null;
+  let wallNum = null, wallNumIdx = -1;
+  for(const j of [wi+1, wi-1]){
+    if(tokens[j] && /^\d+$/.test(tokens[j])){ wallNum = tokens[j]; wallNumIdx = j; break; }
+  }
+  const catTokens = tokens.filter((t,i)=> i!==wi && i!==wallNumIdx);
+  if(catTokens.length === 0 && !wallNum) return null;
+  return { wallNum, catTokens };
+}
+
+// Does the page carry this wall fixture? All category tokens must be present,
+// plus the word WALL. The wall number (if any) adds confidence when found as
+// "WALL 5" / "W5" / "WALL-5" in the page tokens.
+function wallScore(info, normText, pageTokens){
+  if(!normText.includes('WALL')) return 0;
+  for(const t of info.catTokens){ if(!normText.includes(t)) return 0; }
+  let score = 10;
+  if(info.wallNum){
+    const n = info.wallNum;
+    let numHit = pageTokens.includes('W'+n) || pageTokens.includes('WALL'+n);
+    if(!numHit){
+      for(let i=0;i<pageTokens.length-1;i++){
+        if((pageTokens[i]==='WALL' && pageTokens[i+1]===n) ||
+           (pageTokens[i]===n && pageTokens[i+1]==='WALL')){ numHit = true; break; }
+      }
+    }
+    if(numHit) score += 5;
+  }
+  return score;
+}
+
+// Exact/alias matching inside normalized text. Returns matches with the side
+// letter (A/B) that immediately follows, if any — used to prefer Side A.
+// Digit boundary: "ECB1" must not fire inside "ECB12".
+// Spans are claimed longest-key-first so "MT4" won't fire inside "MT4A".
+function findExact(sortedAliases, aliasToFixture, normText){
   const hits = [];
-  const claimed = []; // [start,end) spans already matched
+  const claimed = [];
   const overlaps = (s,e) => claimed.some(([cs,ce]) => s < ce && e > cs);
-  for(const k of keys){ // keys arrive sorted longest-first
+  for(const k of sortedAliases){
     let idx = normText.indexOf(k);
     while(idx !== -1){
       const end = idx + k.length;
@@ -237,16 +287,15 @@ function findKeys(keys, normText){
       const beforeOk = !(before && /\d/.test(before) && /\d/.test(k[0]));
       const afterOk  = !(after  && /\d/.test(after)  && /\d/.test(k[k.length-1]));
       if(beforeOk && afterOk && !overlaps(idx,end)){
-        if(!hits.includes(k)) hits.push(k);
         claimed.push([idx,end]);
+        const side = (after==='A'||after==='B') ? after : null;
+        hits.push({ fixtureIdx: aliasToFixture[k], side });
       }
       idx = normText.indexOf(k, idx+1);
     }
   }
   return hits;
 }
-function showError(msg){ const e=$('errBox'); e.textContent=msg; e.classList.add('show'); }
-function clearError(){ $('errBox').classList.remove('show'); }
 
 // ---------- drop zones ----------
 function wireDrop(zoneId, inputId, onFile){
@@ -277,10 +326,8 @@ wireDrop('dropSheet','fileSheet', async f=>{
     const wb = XLSX.read(buf, {type:'array'});
     const ws = wb.Sheets[wb.SheetNames[0]];
     const rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:false, defval:''});
-    const mapping = {};
-    let count = 0;
 
-    // Look for a header row containing fixture_name and roi_label (new ROI export format)
+    // Look for a header row containing fixture_name and roi_label (ROI export format)
     let nameCol = 0, numCol = 1, startRow = 0;
     const headerNorm = c => String(c).toLowerCase().replace(/[^a-z_]/g,'');
     for(let r=0; r<Math.min(rows.length,10); r++){
@@ -293,27 +340,28 @@ wireDrop('dropSheet','fileSheet', async f=>{
     // roi_label values look like "roi-140012" — keep only the number part
     const cleanNumber = v => String(v).trim().replace(/^roi[\s_-]*/i,'').trim();
 
+    const fixtures = [];
     for(let r=startRow; r<rows.length; r++){
       const row = rows[r];
       if(!row) continue;
       const name = String(row[nameCol]||'').trim();
       const num  = cleanNumber(row[numCol]||'');
       if(!name || !num) continue;
-      // skip an obvious header row in fallback mode like "Name | Number"
-      if(startRow===0 && count===0 && !/\d/.test(num)) continue;
-      const key = norm(name);
-      if(!key) continue;
-      mapping[key] = { display:name, number:num };
-      count++;
+      if(startRow===0 && fixtures.length===0 && !/\d/.test(num)) continue; // header row in fallback mode
+      fixtures.push({
+        display: name,
+        number: num,
+        aliases: buildAliases(name),
+        wall: wallInfo(name)
+      });
     }
-    if(count===0){ showError('Could not find any name → number pairs in the sheet. Expected name in column A and number in column B.'); return; }
-    state.mapping = mapping;
-    $('sheetMeta').textContent = `${f.name} · ${count} mapping${count>1?'s':''}`;
+    if(fixtures.length===0){ showError('Could not find any fixture → number pairs in the sheet. Expected fixture_name + roi_label columns, or name/number in columns A/B.'); return; }
+    state.fixtures = fixtures;
+    $('sheetMeta').textContent = `${f.name} · ${fixtures.length} mapping${fixtures.length>1?'s':''}`;
     $('dropSheet').classList.add('loaded');
-    // preview chips
-    const chips = Object.values(mapping).slice(0,12)
+    const chips = fixtures.slice(0,12)
       .map(m=>`<span class="chip">${escapeHtml(m.display)} → <b>${escapeHtml(m.number)}</b></span>`).join('');
-    $('chipRow').innerHTML = chips + (count>12?`<span class="chip">+${count-12} more</span>`:'');
+    $('chipRow').innerHTML = chips + (fixtures.length>12?`<span class="chip">+${fixtures.length-12} more</span>`:'');
     $('mapPanel').style.display='block';
     maybeEnable();
   }catch(err){
@@ -321,10 +369,9 @@ wireDrop('dropSheet','fileSheet', async f=>{
   }
 });
 
-function escapeHtml(s){ return s.replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-function maybeEnable(){ $('btnRun').disabled = !(state.pdfFile && state.mapping); }
+function maybeEnable(){ $('btnRun').disabled = !(state.pdfFile && state.fixtures); }
 
-// ---------- main run ----------
+// ---------- main run: scan → resolve → render ----------
 $('btnRun').addEventListener('click', run);
 
 async function run(){
@@ -340,69 +387,110 @@ async function run(){
     const buf = await state.pdfFile.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({data:buf}).promise;
     const total = pdf.numPages;
+    const fixtures = state.fixtures;
 
-    // sort name keys longest-first so "EC-B11" wins over "EC-B1"
-    const keys = Object.keys(state.mapping).sort((a,b)=>b.length-a.length);
+    // alias -> fixture index, longest alias first so specific names win overlaps
+    const aliasToFixture = {};
+    for(let i=0;i<fixtures.length;i++){
+      for(const a of fixtures[i].aliases){
+        if(!(a in aliasToFixture)) aliasToFixture[a] = i;
+      }
+    }
+    const sortedAliases = Object.keys(aliasToFixture).sort((a,b)=>b.length-a.length);
 
-    const zip = new JSZip();
-    const usedNames = {};
-    let matched=0, missed=0;
+    // ---- PASS 1: scan every page's text, collect candidate matches per fixture ----
+    // candidates[fixtureIdx] = [{page, score, method}]
+    const candidates = fixtures.map(()=>[]);
+    const pages = [];
 
     for(let p=1; p<=total; p++){
       label.textContent = `Scanning page ${p} of ${total}…`;
-      fill.style.width = `${Math.round((p-0.5)/total*100)}%`;
+      fill.style.width = `${Math.round(p/total*50)}%`;
 
       const page = await pdf.getPage(p);
       const tc = await page.getTextContent();
       const viewport = page.getViewport({scale:1});
 
-      // collect text from the top 25% of the page, fall back to whole page
       const topText = [], allText = [];
       for(const item of tc.items){
-        const y = viewport.height - item.transform[5]; // distance from top
+        const y = viewport.height - item.transform[5];
         allText.push(item.str);
         if(y < viewport.height*0.25) topText.push(item.str);
       }
-      const topNorm = norm(topText.join(' '));
-      const allNorm = norm(allText.join(' '));
+      const topJoined = topText.join(' ');
+      const allJoined = allText.join(' ');
+      const topNorm = norm(topJoined), allNorm = norm(allJoined);
+      const allTokens = tokenize(allJoined);
+      pages.push({ snippet: topJoined.trim().slice(0,40) });
 
-      // find ALL fixtures on this page (prefer top strip, fall back to whole page)
-      let hitKeys = findKeys(keys, topNorm);
-      if(hitKeys.length === 0) hitKeys = findKeys(keys, allNorm);
+      // exact/alias matches — top strip scores higher than body
+      const sidePref = s => s==null ? 2 : (s==='A' ? 1 : 0); // no suffix > A > B
+      for(const h of findExact(sortedAliases, aliasToFixture, topNorm)){
+        candidates[h.fixtureIdx].push({ page:p, method:'exact', score: 100 + sidePref(h.side) });
+      }
+      for(const h of findExact(sortedAliases, aliasToFixture, allNorm)){
+        candidates[h.fixtureIdx].push({ page:p, method:'exact', score: 90 + sidePref(h.side) });
+      }
 
-      if(hitKeys.length > 0){
-        // render the page once, reuse the same image for every fixture on it
-        label.textContent = `Rendering page ${p} (${hitKeys.length} fixture${hitKeys.length>1?'s':''})…`;
-        const vp2 = page.getViewport({scale:2});
-        const canvas = document.createElement('canvas');
-        canvas.width = vp2.width; canvas.height = vp2.height;
-        await page.render({canvasContext:canvas.getContext('2d'), viewport:vp2}).promise;
-        const blob = await new Promise(res=>canvas.toBlob(res,'image/png'));
+      // wall heuristic for WALL-type fixtures
+      for(let i=0;i<fixtures.length;i++){
+        const w = fixtures[i].wall;
+        if(!w) continue;
+        const sTop = wallScore(w, topNorm, allTokens);
+        const sAll = sTop ? 0 : wallScore(w, allNorm, allTokens);
+        if(sTop) candidates[i].push({ page:p, method:'wall match', score: 40 + sTop });
+        else if(sAll) candidates[i].push({ page:p, method:'wall match', score: 30 + sAll });
+      }
+    }
 
-        for(const hk of hitKeys){
-          const m = state.mapping[hk];
-          let base = `${m.number}${suffix}`;
-          if(usedNames[base]!==undefined){ usedNames[base]++; base = `${base}_${usedNames[base]}`; }
-          else usedNames[base]=1;
-          const fname = `${base}.png`;
-          zip.file(fname, blob);
-          matched++;
-          const row = document.createElement('tr');
-          row.innerHTML = `<td>${p}</td><td>${escapeHtml(m.display)}</td><td>${escapeHtml(m.number)}</td><td>${fname}</td><td><span class="pill ok">extracted</span></td>`;
-          $('resBody').appendChild(row);
-        }
+    // ---- PASS 2: resolve one page per fixture (highest score, then earliest page) ----
+    const chosen = fixtures.map((f,i)=>{
+      const c = candidates[i];
+      if(c.length===0) return null;
+      c.sort((a,b)=> b.score - a.score || a.page - b.page);
+      return c[0];
+    });
+
+    // ---- PASS 3: render each needed page once, build zip ----
+    const neededPages = [...new Set(chosen.filter(Boolean).map(c=>c.page))];
+    const pageBlobs = {};
+    for(let i=0;i<neededPages.length;i++){
+      const p = neededPages[i];
+      label.textContent = `Rendering page ${p} (${i+1} of ${neededPages.length})…`;
+      fill.style.width = `${50 + Math.round((i+1)/neededPages.length*50)}%`;
+      const page = await pdf.getPage(p);
+      const vp2 = page.getViewport({scale:2});
+      const canvas = document.createElement('canvas');
+      canvas.width = vp2.width; canvas.height = vp2.height;
+      await page.render({canvasContext:canvas.getContext('2d'), viewport:vp2}).promise;
+      pageBlobs[p] = await new Promise(res=>canvas.toBlob(res,'image/png'));
+    }
+
+    const zip = new JSZip();
+    const usedNames = {};
+    let matched=0, missed=0;
+
+    for(let i=0;i<fixtures.length;i++){
+      const f = fixtures[i], c = chosen[i];
+      const row = document.createElement('tr');
+      if(c){
+        let base = `${f.number}${suffix}`;
+        if(usedNames[base]!==undefined){ usedNames[base]++; base = `${base}_${usedNames[base]}`; }
+        else usedNames[base]=1;
+        const fname = `${base}.png`;
+        zip.file(fname, pageBlobs[c.page]);
+        matched++;
+        row.innerHTML = `<td>${escapeHtml(f.display)}</td><td>${escapeHtml(f.number)}</td><td>${c.page}</td><td><span class="via">${c.method}</span></td><td>${fname}</td><td><span class="pill ok">extracted</span></td>`;
       }else{
         missed++;
-        const snippet = topText.join(' ').trim().slice(0,40) || '—';
-        const row = document.createElement('tr');
-        row.innerHTML = `<td>${p}</td><td>${escapeHtml(snippet)}</td><td>—</td><td>—</td><td><span class="pill miss">no match</span></td>`;
-        $('resBody').appendChild(row);
+        row.innerHTML = `<td>${escapeHtml(f.display)}</td><td>${escapeHtml(f.number)}</td><td>—</td><td>—</td><td>—</td><td><span class="pill miss">not found</span></td>`;
       }
+      $('resBody').appendChild(row);
     }
 
     fill.style.width='100%';
     label.textContent='Done.';
-    $('stPages').textContent=total;
+    $('stFixtures').textContent=fixtures.length;
     $('stMatched').textContent=matched;
     $('stMissed').textContent=missed;
     $('results').classList.add('show');
@@ -415,7 +503,7 @@ async function run(){
       $('zipHint').textContent = `${matched} image${matched>1?'s':''} · ${(state.zipBlob.size/1024/1024).toFixed(2)} MB`;
       label.textContent='Done — zip ready.';
     }else{
-      showError('No page labels matched the sheet. Check that the labels on the pages match the names in column A.');
+      showError('No fixtures from the sheet were found in the PDF. Check the "not found" rows to see what was expected.');
     }
   }catch(err){
     showError('Something went wrong: '+err.message);
