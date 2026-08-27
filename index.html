@@ -163,7 +163,7 @@
     <label class="drop" id="dropSheet" tabindex="0">
       <span class="tag">2 · Mapping sheet</span>
       <h2>Drop the sheet here</h2>
-      <p>.xlsx / .xls / .csv — name in column A, number in column B</p>
+      <p>.xlsx / .xls / .csv — uses fixture_name + roi_label columns (or column A/B as fallback)</p>
       <div class="filemeta" id="sheetMeta"></div>
       <input type="file" id="fileSheet" accept=".xlsx,.xls,.csv">
     </label>
@@ -188,7 +188,7 @@
   <div class="results" id="results">
     <div class="summary">
       <div class="stat"><b id="stPages">0</b>pages scanned</div>
-      <div class="stat ok"><b id="stMatched">0</b>matched & extracted</div>
+      <div class="stat ok"><b id="stMatched">0</b>images extracted</div>
       <div class="stat miss"><b id="stMissed">0</b>not in sheet</div>
     </div>
     <table>
@@ -218,21 +218,32 @@ const $ = id => document.getElementById(id);
 // Reduce to letters+digits only, so "EC_B1", "EC - B1", "EC B - 1" all become "ECB1"
 const norm = s => String(s).toUpperCase().replace(/[^A-Z0-9]+/g,'');
 
-// Find a key inside normalized text with digit boundaries:
-// "ECB1" must not match inside "ECB12" (so EC B - 1 ≠ EC B - 12)
-function findKey(keys, normText){
-  for(const k of keys){
+// Find ALL keys inside normalized text (a page can carry several fixtures,
+// e.g. MT - 4 - A and MT - 4 - B on the same planogram).
+// Rules:
+//  - digit boundaries: "ECB1" must not match inside "ECB12" (EC B - 1 ≠ EC B - 12)
+//  - keys are tried longest-first, and once a span of text is claimed by a key,
+//    shorter keys overlapping that span are skipped ("MT4" won't fire inside "MT4A")
+function findKeys(keys, normText){
+  const hits = [];
+  const claimed = []; // [start,end) spans already matched
+  const overlaps = (s,e) => claimed.some(([cs,ce]) => s < ce && e > cs);
+  for(const k of keys){ // keys arrive sorted longest-first
     let idx = normText.indexOf(k);
     while(idx !== -1){
+      const end = idx + k.length;
       const before = normText[idx-1];
-      const after  = normText[idx+k.length];
+      const after  = normText[end];
       const beforeOk = !(before && /\d/.test(before) && /\d/.test(k[0]));
       const afterOk  = !(after  && /\d/.test(after)  && /\d/.test(k[k.length-1]));
-      if(beforeOk && afterOk) return k;
+      if(beforeOk && afterOk && !overlaps(idx,end)){
+        if(!hits.includes(k)) hits.push(k);
+        claimed.push([idx,end]);
+      }
       idx = normText.indexOf(k, idx+1);
     }
   }
-  return null;
+  return hits;
 }
 function showError(msg){ const e=$('errBox'); e.textContent=msg; e.classList.add('show'); }
 function clearError(){ $('errBox').classList.remove('show'); }
@@ -268,14 +279,31 @@ wireDrop('dropSheet','fileSheet', async f=>{
     const rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:false, defval:''});
     const mapping = {};
     let count = 0;
-    for(const row of rows){
-      if(!row || row.length < 2) continue;
-      const name = String(row[0]||'').trim();
-      const num  = String(row[1]||'').trim();
+
+    // Look for a header row containing fixture_name and roi_label (new ROI export format)
+    let nameCol = 0, numCol = 1, startRow = 0;
+    const headerNorm = c => String(c).toLowerCase().replace(/[^a-z_]/g,'');
+    for(let r=0; r<Math.min(rows.length,10); r++){
+      const cells = (rows[r]||[]).map(headerNorm);
+      const fi = cells.indexOf('fixture_name');
+      const ri = cells.indexOf('roi_label');
+      if(fi !== -1 && ri !== -1){ nameCol=fi; numCol=ri; startRow=r+1; break; }
+    }
+
+    // roi_label values look like "roi-140012" — keep only the number part
+    const cleanNumber = v => String(v).trim().replace(/^roi[\s_-]*/i,'').trim();
+
+    for(let r=startRow; r<rows.length; r++){
+      const row = rows[r];
+      if(!row) continue;
+      const name = String(row[nameCol]||'').trim();
+      const num  = cleanNumber(row[numCol]||'');
       if(!name || !num) continue;
-      // skip an obvious header row like "Name | Number"
-      if(count===0 && !/\d/.test(num)) continue;
-      mapping[norm(name)] = { display:name, number:num };
+      // skip an obvious header row in fallback mode like "Name | Number"
+      if(startRow===0 && count===0 && !/\d/.test(num)) continue;
+      const key = norm(name);
+      if(!key) continue;
+      mapping[key] = { display:name, number:num };
       count++;
     }
     if(count===0){ showError('Could not find any name → number pairs in the sheet. Expected name in column A and number in column B.'); return; }
@@ -338,32 +366,38 @@ async function run(){
       const topNorm = norm(topText.join(' '));
       const allNorm = norm(allText.join(' '));
 
-      let hitKey = findKey(keys, topNorm) || findKey(keys, allNorm);
+      // find ALL fixtures on this page (prefer top strip, fall back to whole page)
+      let hitKeys = findKeys(keys, topNorm);
+      if(hitKeys.length === 0) hitKeys = findKeys(keys, allNorm);
 
-      const row = document.createElement('tr');
-      if(hitKey){
-        const m = state.mapping[hitKey];
-        // render page to PNG at 2x
-        label.textContent = `Rendering page ${p} (${m.display})…`;
+      if(hitKeys.length > 0){
+        // render the page once, reuse the same image for every fixture on it
+        label.textContent = `Rendering page ${p} (${hitKeys.length} fixture${hitKeys.length>1?'s':''})…`;
         const vp2 = page.getViewport({scale:2});
         const canvas = document.createElement('canvas');
         canvas.width = vp2.width; canvas.height = vp2.height;
         await page.render({canvasContext:canvas.getContext('2d'), viewport:vp2}).promise;
         const blob = await new Promise(res=>canvas.toBlob(res,'image/png'));
 
-        let base = `${m.number}${suffix}`;
-        if(usedNames[base]!==undefined){ usedNames[base]++; base = `${base}_${usedNames[base]}`; }
-        else usedNames[base]=1;
-        const fname = `${base}.png`;
-        zip.file(fname, blob);
-        matched++;
-        row.innerHTML = `<td>${p}</td><td>${escapeHtml(m.display)}</td><td>${escapeHtml(m.number)}</td><td>${fname}</td><td><span class="pill ok">extracted</span></td>`;
+        for(const hk of hitKeys){
+          const m = state.mapping[hk];
+          let base = `${m.number}${suffix}`;
+          if(usedNames[base]!==undefined){ usedNames[base]++; base = `${base}_${usedNames[base]}`; }
+          else usedNames[base]=1;
+          const fname = `${base}.png`;
+          zip.file(fname, blob);
+          matched++;
+          const row = document.createElement('tr');
+          row.innerHTML = `<td>${p}</td><td>${escapeHtml(m.display)}</td><td>${escapeHtml(m.number)}</td><td>${fname}</td><td><span class="pill ok">extracted</span></td>`;
+          $('resBody').appendChild(row);
+        }
       }else{
         missed++;
         const snippet = topText.join(' ').trim().slice(0,40) || '—';
+        const row = document.createElement('tr');
         row.innerHTML = `<td>${p}</td><td>${escapeHtml(snippet)}</td><td>—</td><td>—</td><td><span class="pill miss">no match</span></td>`;
+        $('resBody').appendChild(row);
       }
-      $('resBody').appendChild(row);
     }
 
     fill.style.width='100%';
