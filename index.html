@@ -270,11 +270,55 @@ function wallScore(info, normText, pageTokens){
   return score;
 }
 
-// Exact/alias matching inside normalized text. Returns matches with the side
+// Wall-code heuristic: sheet names like "SM W1" mean "wall 1 of the SM category".
+// The matching page is a "Wall Elevations" page whose category word fits the
+// abbreviation (SM -> SMART, FS -> FUSION, NW -> NIGHT WEAR initials, etc).
+function wallCode(name){
+  const t = tokenize(name);
+  if(t.length===2 && /^W\d+$/.test(t[1]) && /^[A-Z]{1,5}$/.test(t[0]))
+    return { abbr:t[0], num:t[1].slice(1) };
+  if(t.length===3 && t[1]==='W' && /^\d+$/.test(t[2]) && /^[A-Z]{1,5}$/.test(t[0]))
+    return { abbr:t[0], num:t[2] };
+  return null;
+}
+
+const STOPWORDS = new Set(['WALL','ELEVATION','ELEVATIONS','STORES','STORE','NEW','WITH','WITHOUT','FLOOR','FIXTURES','FIXTURE']);
+
+// abbr is a subsequence of word, anchored on the first letter (FS -> FUSION)
+function isSubseq(abbr, word){
+  if(!word || word[0]!==abbr[0]) return false;
+  let i=0;
+  for(const ch of word){ if(i<abbr.length && ch===abbr[i]) i++; }
+  return i===abbr.length;
+}
+
+// Score a page against a wall code. Only "Wall Elevations" pages qualify.
+// Prefix / initials matches score higher than loose subsequence matches.
+function wallCodeScore(code, topTokens, topNorm){
+  if(!topNorm.includes('WALL') || !topNorm.includes('ELEVATION')) return 0;
+  const words = [];
+  for(const t of topTokens){
+    if(t==='WALL') break;                      // category words precede "Wall Elevations"
+    if(/^[A-Z]+$/.test(t) && !STOPWORDS.has(t)) words.push(t);
+  }
+  for(const w of words){ if(w.startsWith(code.abbr)) return 15; }          // SM -> SMART
+  for(let i=0;i<words.length;i++){                                          // NW -> NIGHT WEAR
+    let ini='';
+    for(let j=i;j<words.length;j++){
+      ini += words[j][0];
+      if(ini===code.abbr) return 15;
+      if(ini.length>=code.abbr.length) break;
+    }
+  }
+  for(const w of words){ if(isSubseq(code.abbr, w)) return 12; }           // FS -> FUSION
+  return 0;
+}
+
+
 // letter (A/B) that immediately follows, if any — used to prefer Side A.
 // Digit boundary: "ECB1" must not fire inside "ECB12".
 // Spans are claimed longest-key-first so "MT4" won't fire inside "MT4A".
-function findExact(sortedAliases, aliasToFixture, normText){
+function findExact(sortedAliases, aliasToFixtures, normText){
   const hits = [];
   const claimed = [];
   const overlaps = (s,e) => claimed.some(([cs,ce]) => s < ce && e > cs);
@@ -289,7 +333,7 @@ function findExact(sortedAliases, aliasToFixture, normText){
       if(beforeOk && afterOk && !overlaps(idx,end)){
         claimed.push([idx,end]);
         const side = (after==='A'||after==='B') ? after : null;
-        hits.push({ fixtureIdx: aliasToFixture[k], side });
+        for(const fi of aliasToFixtures[k]) hits.push({ fixtureIdx: fi, side });
       }
       idx = normText.indexOf(k, idx+1);
     }
@@ -352,7 +396,8 @@ wireDrop('dropSheet','fileSheet', async f=>{
         display: name,
         number: num,
         aliases: buildAliases(name),
-        wall: wallInfo(name)
+        wall: wallInfo(name),
+        code: wallCode(name)
       });
     }
     if(fixtures.length===0){ showError('Could not find any fixture → number pairs in the sheet. Expected fixture_name + roi_label columns, or name/number in columns A/B.'); return; }
@@ -389,14 +434,15 @@ async function run(){
     const total = pdf.numPages;
     const fixtures = state.fixtures;
 
-    // alias -> fixture index, longest alias first so specific names win overlaps
-    const aliasToFixture = {};
+    // alias -> ALL fixture indices sharing it (the sheet can list the same
+    // fixture name twice with different ROI numbers — both must get the image)
+    const aliasToFixtures = {};
     for(let i=0;i<fixtures.length;i++){
       for(const a of fixtures[i].aliases){
-        if(!(a in aliasToFixture)) aliasToFixture[a] = i;
+        (aliasToFixtures[a] = aliasToFixtures[a] || []).push(i);
       }
     }
-    const sortedAliases = Object.keys(aliasToFixture).sort((a,b)=>b.length-a.length);
+    const sortedAliases = Object.keys(aliasToFixtures).sort((a,b)=>b.length-a.length);
 
     // ---- PASS 1: scan every page's text, collect candidate matches per fixture ----
     // candidates[fixtureIdx] = [{page, score, method}]
@@ -420,26 +466,32 @@ async function run(){
       const topJoined = topText.join(' ');
       const allJoined = allText.join(' ');
       const topNorm = norm(topJoined), allNorm = norm(allJoined);
-      const allTokens = tokenize(allJoined);
+      const allTokens = tokenize(allJoined), topTokens = tokenize(topJoined);
       pages.push({ snippet: topJoined.trim().slice(0,40) });
 
       // exact/alias matches — top strip scores higher than body
       const sidePref = s => s==null ? 2 : (s==='A' ? 1 : 0); // no suffix > A > B
-      for(const h of findExact(sortedAliases, aliasToFixture, topNorm)){
+      for(const h of findExact(sortedAliases, aliasToFixtures, topNorm)){
         candidates[h.fixtureIdx].push({ page:p, method:'exact', score: 100 + sidePref(h.side) });
       }
-      for(const h of findExact(sortedAliases, aliasToFixture, allNorm)){
+      for(const h of findExact(sortedAliases, aliasToFixtures, allNorm)){
         candidates[h.fixtureIdx].push({ page:p, method:'exact', score: 90 + sidePref(h.side) });
       }
 
-      // wall heuristic for WALL-type fixtures
+      // wall heuristic + wall-code heuristic
       for(let i=0;i<fixtures.length;i++){
         const w = fixtures[i].wall;
-        if(!w) continue;
-        const sTop = wallScore(w, topNorm, allTokens);
-        const sAll = sTop ? 0 : wallScore(w, allNorm, allTokens);
-        if(sTop) candidates[i].push({ page:p, method:'wall match', score: 40 + sTop });
-        else if(sAll) candidates[i].push({ page:p, method:'wall match', score: 30 + sAll });
+        if(w){
+          const sTop = wallScore(w, topNorm, allTokens);
+          const sAll = sTop ? 0 : wallScore(w, allNorm, allTokens);
+          if(sTop) candidates[i].push({ page:p, method:'wall match', score: 40 + sTop });
+          else if(sAll) candidates[i].push({ page:p, method:'wall match', score: 30 + sAll });
+        }
+        const c = fixtures[i].code;
+        if(c){
+          const sc = wallCodeScore(c, topTokens, topNorm);
+          if(sc) candidates[i].push({ page:p, method:'wall code', score: 40 + sc });
+        }
       }
     }
 
@@ -483,7 +535,7 @@ async function run(){
         row.innerHTML = `<td>${escapeHtml(f.display)}</td><td>${escapeHtml(f.number)}</td><td>${c.page}</td><td><span class="via">${c.method}</span></td><td>${fname}</td><td><span class="pill ok">extracted</span></td>`;
       }else{
         missed++;
-        row.innerHTML = `<td>${escapeHtml(f.display)}</td><td>${escapeHtml(f.number)}</td><td>—</td><td>—</td><td>—</td><td><span class="pill miss">not found</span></td>`;
+        row.innerHTML = `<td>${escapeHtml(f.display)}</td><td>${escapeHtml(f.number)}</td><td>—</td><td>—</td><td>—</td><td><span class="pill miss">not in PDF</span></td>`;
       }
       $('resBody').appendChild(row);
     }
