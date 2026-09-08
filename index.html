@@ -318,6 +318,26 @@ function wallCodeScore(code, topTokens, topNorm){
 // letter (A/B) that immediately follows, if any — used to prefer Side A.
 // Digit boundary: "ECB1" must not fire inside "ECB12".
 // Spans are claimed longest-key-first so "MT4" won't fire inside "MT4A".
+// New wall convention: "WALL#3DNW1-W3", "WALL#08NW W1-W2" — the useful bit is
+// the category abbreviation between the leading id and the W-range (DN, NW, ...).
+// It resolves to the category's "Wall Elevations" page, same as wall codes.
+function wallHash(name){
+  const m = norm(name).match(/^WALL(\d*)([A-Z]+?)W?(\d+)(?:W(\d+))?$/);
+  return m ? { abbr: m[2] } : null;
+}
+
+// Last-resort fuzzy alias: allow up to 2 extra letters before each digit chunk,
+// so "IW T1" also matches pages labelled "IW - TW 1" (IWT1 ~ IWTW1).
+// Scores far below exact and wall matches, so it only wins when nothing else does.
+function fuzzyRegex(key){
+  const chunks = key.match(/[A-Z]+|\d+/g) || [];
+  if(chunks.length < 2) return null;
+  let pat = '';
+  chunks.forEach((c,i)=>{ pat += (/^\d/.test(c) && i>0) ? '[A-Z]{0,2}'+c : c; });
+  if(pat === key) return null;
+  return new RegExp(pat + '(?!\\d)');
+}
+
 function findExact(sortedAliases, aliasToFixtures, normText){
   const hits = [];
   const claimed = [];
@@ -397,7 +417,8 @@ wireDrop('dropSheet','fileSheet', async f=>{
         number: num,
         aliases: buildAliases(name),
         wall: wallInfo(name),
-        code: wallCode(name)
+        code: wallCode(name) || wallHash(name),
+        fz: fuzzyRegex(norm(name))
       });
     }
     if(fixtures.length===0){ showError('Could not find any fixture → number pairs in the sheet. Expected fixture_name + roi_label columns, or name/number in columns A/B.'); return; }
@@ -491,6 +512,11 @@ async function run(){
         if(c){
           const sc = wallCodeScore(c, topTokens, topNorm);
           if(sc) candidates[i].push({ page:p, method:'wall code', score: 40 + sc });
+        }
+        const fz = fixtures[i].fz;
+        if(fz){
+          if(fz.test(topNorm)) candidates[i].push({ page:p, method:'fuzzy', score: 21 });
+          else if(fz.test(allNorm)) candidates[i].push({ page:p, method:'fuzzy', score: 20 });
         }
       }
     }
