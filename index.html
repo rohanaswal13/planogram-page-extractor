@@ -292,15 +292,25 @@ function isSubseq(abbr, word){
   return i===abbr.length;
 }
 
+// Nomenclature dictionary — abbreviation -> signature of the category's page.
+// (DN=Denim, AT=Athleisure, FS=Fusion, SM=Smart, WT=Western, INF=Infants,
+//  EC=Ethnic, VG=Vogue, plus the rest observed across POGs.)
+const CATEGORY_MAP = {
+  DN:'DENIM', AT:'ATHLEISURE', FS:'FUSION', SM:'SMART', WT:'WESTERN',
+  INF:'INFANT', EC:'ETHNIC', VG:'VOGUE', NW:'NIGHTWEAR', MF:'MENSFOOTWEAR',
+  WF:'WOMENSFOOTWEAR', KF:'KIDSFOOTWEAR', PS:'POLO', UBN:'URBAN',
+  TY:'TRENDING', IW:'INNERWEAR', DR:'DRESS', OC:'OCCASION', LW:'FORMAL'
+};
+
 // Score a page against a wall code. Only "Wall Elevations" pages qualify.
-// Prefix / initials matches score higher than loose subsequence matches.
+// PDF text can arrive in any order (category before OR after "Wall Elevations"),
+// so category words are collected from the whole top strip, not just before WALL.
+// Dictionary match > prefix / initials > loose subsequence.
 function wallCodeScore(code, topTokens, topNorm){
   if(!topNorm.includes('WALL') || !topNorm.includes('ELEVATION')) return 0;
-  const words = [];
-  for(const t of topTokens){
-    if(t==='WALL') break;                      // category words precede "Wall Elevations"
-    if(/^[A-Z]+$/.test(t) && !STOPWORDS.has(t)) words.push(t);
-  }
+  const dict = CATEGORY_MAP[code.abbr];
+  if(dict && topNorm.includes(dict)) return 16;
+  const words = topTokens.filter(t => /^[A-Z]+$/.test(t) && !STOPWORDS.has(t));
   for(const w of words){ if(w.startsWith(code.abbr)) return 15; }          // SM -> SMART
   for(let i=0;i<words.length;i++){                                          // NW -> NIGHT WEAR
     let ini='';
@@ -581,7 +591,12 @@ async function run(){
       $('zipHint').textContent = `${matched} image${matched>1?'s':''} · ${(state.zipBlob.size/1024/1024).toFixed(2)} MB`;
       label.textContent='Done — zip ready.';
     }else{
-      showError('No fixtures from the sheet were found in the PDF. Check the "not found" rows to see what was expected.');
+      const sample = pages.map(pg=>pg.snippet).find(s=>s && s.length>3) || '';
+      if(!sample){
+        showError('No fixtures matched because this PDF has NO readable text — it looks scanned or flattened to images. The tool reads text, so this copy of the PDF cannot be matched. Use the original exported PDF (not a scanned/printed copy).');
+      }else{
+        showError(`No fixtures from the sheet were found in the PDF. Sample of what was read from the pages: "${sample}". If this looks like garbage instead of page labels, the PDF's text layer is damaged — try the original export.`);
+      }
     }
   }catch(err){
     showError('Something went wrong: '+err.message);
