@@ -396,10 +396,34 @@ wireDrop('dropPdf','filePdf', f=>{
 wireDrop('dropSheet','fileSheet', async f=>{
   clearError();
   try{
-    const buf = await f.arrayBuffer();
-    const wb = XLSX.read(buf, {type:'array'});
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    const rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:false, defval:''});
+    let rows;
+    if(/\.csv$/i.test(f.name)){
+      // Parse CSV ourselves with comma as the ONLY delimiter (quote-aware).
+      // SheetJS auto-sniffs the delimiter and picks ';' when the coordinates
+      // column has more semicolons than the row has commas — corrupting everything.
+      const text = await f.text();
+      rows = text.split(/\r?\n/).filter(l=>l.length).map(line=>{
+        const cells=[]; let cur='', inQ=false;
+        for(let i=0;i<line.length;i++){
+          const ch=line[i];
+          if(inQ){
+            if(ch==='"'){ if(line[i+1]==='"'){cur+='"';i++;} else inQ=false; }
+            else cur+=ch;
+          }else{
+            if(ch==='"') inQ=true;
+            else if(ch===','){ cells.push(cur); cur=''; }
+            else cur+=ch;
+          }
+        }
+        cells.push(cur);
+        return cells;
+      });
+    }else{
+      const buf = await f.arrayBuffer();
+      const wb = XLSX.read(buf, {type:'array'});
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:false, defval:''});
+    }
 
     // Look for a header row containing fixture_name and roi_label (ROI export format)
     let nameCol = 0, numCol = 1, startRow = 0;
