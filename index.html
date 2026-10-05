@@ -897,7 +897,7 @@ function renderResults(){
 }
 function updateDlHint(){
   const n = state.rows.filter(r=>r.choice).length;
-  $('dlHint').textContent = `${n} image${n!==1?'s':''} will be exported · ${suffix()}`;
+  $('dlHint').textContent = `${n} image${n!==1?'s':''} will be exported as <ROI>_<Fixture Name>.jpg · zip: planograms_${state.store.code}_${suffix()}.zip`;
   $('btnZip').disabled = n===0;
 }
 
@@ -937,6 +937,11 @@ async function preview(r){
 $('dlgClose').addEventListener('click', ()=> $('dlg').close());
 
 function suffix(){ return `${MONTHS[+$('monthSel').value]}_${$('yearInput').value}`; }
+// image name: <ROI>_<fixture name as written in the ROI sheet>, minus characters files can't hold
+function imageName(r){
+  const fixture = String(r.name).replace(/[\/\\:*?"<>|]+/g,'-').replace(/\s+/g,' ').trim();
+  return `${r.roi}_${fixture}.jpg`;
+}
 
 async function downloadZip(){
   clearError();
@@ -955,9 +960,9 @@ async function downloadZip(){
         const canvas = await renderPage(r.choice.path, pg, 2);
         rendered.set(k, await new Promise(res=>canvas.toBlob(res,'image/jpeg',0.92)));
       }
-      let base = `${r.roi}_${suffix()}`;
-      if(used[base]){ used[base]++; base = `${base}_${used[base]}`; } else used[base] = 1;
-      r.imageName = `${base}.jpg`; r.renderedPage = pg;
+      let name = imageName(r);
+      if(used[name]){ used[name]++; name = name.replace(/\.jpg$/, `_${used[name]}.jpg`); } else used[name] = 1;
+      r.imageName = name; r.renderedPage = pg;
       zip.file(r.imageName, rendered.get(k));
     }
     setProgress(97, 'Building zip…');
@@ -981,7 +986,7 @@ async function downloadXlsx(){
       isNaN(+r.roi) ? r.roi : +r.roi, r.name, fixtureType(r), DIV_LABEL[r.division]||'', r.group||'',
       [...r.cameras].filter(Boolean).join(', '),
       r.choice ? r.choice.path : '', page,
-      r.choice ? `${r.roi}_${suffix()}.jpg` : '',
+      r.choice ? (r.imageName || imageName(r)) : '',
       r.choice ? r.status.text : (r.noPog ? 'No planogram' : (r.status.cls==='miss' ? 'Not found' : 'Left out')),
     ]);
   }
@@ -1193,7 +1198,7 @@ $('btnXlsx').addEventListener('click', ()=> downloadXlsx().catch(err=>showError(
   $('monthSel').innerHTML = MONTHS.map((m,i)=>`<option value="${i}">${m[0].toUpperCase()+m.slice(1)}</option>`).join('');
   $('monthSel').value = String(now.getMonth());
   $('yearInput').value = now.getFullYear();
-  const upd = ()=>{ $('patternHint').textContent = `naming: <ROI>_${suffix()}.jpg`; if(state.rows) updateDlHint(); };
+  const upd = ()=>{ $('patternHint').textContent = 'naming: <ROI>_<Fixture Name>.jpg'; if(state.rows) updateDlHint(); };
   $('monthSel').addEventListener('change', upd); $('yearInput').addEventListener('input', upd); upd();
 })();
 
